@@ -3,11 +3,15 @@ package main
 import (
 	"fmt"
 	"math/rand"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
-const call_name_illegal = "![];#$%&'*+/=?^_`{|}~-±§:<>,"
+const call_name_illegal = "![];#$%&'*+/=?^_`{|}~-±§:</>,\\"
 
 type user struct {
 	approved_by        int64
@@ -19,6 +23,7 @@ type user struct {
 	first              string
 	id                 uint64
 	last               string
+	hash               []byte
 	registration_date  int64
 	registration_email string
 }
@@ -41,7 +46,7 @@ func (u *user) Checks() error {
 		return fmt.Errorf("error email domain (-) at start or end")
 	}
 
-	if strings.ContainsAny(email[1], "!#$%&'*+/=?^_`{|}~") {
+	if strings.ContainsAny(email[1], "!#$%&'*+/=?^_`{|}~\\") {
 		return fmt.Errorf("error email domain contains illegal characters")
 	}
 
@@ -81,35 +86,81 @@ func (u *user) GenerateExtension() error {
 	return nil
 }
 
-func main() {
+// Generate Password Hash
+func (u *user) Password(pass string) error {
+	var err error
+
+	if len(pass) <= 8 {
+		err = fmt.Errorf("password is too short")
+	} else {
+		u.hash, err = bcrypt.GenerateFromPassword([]byte(pass), 12)
+	}
+
+	return err
+}
+
+// Check Password is correct
+func (u *user) PasswordCheck(password string) error {
+	err := bcrypt.CompareHashAndPassword([]byte(u.hash), []byte(password))
+
+	return err
+}
+
+func NewUser(w http.ResponseWriter, r *http.Request) {
+	var response string
+
+	if r.Method != "POST" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.Write([]byte("Sorry, that method is not supported"))
+		return
+	}
+
+	err := r.ParseForm()
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	w.WriteHeader(http.StatusOK)
+
+	sip_request, err := strconv.ParseBool(r.FormValue("sip"))
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	New := user{
 		0,
 		true,
 		1,
-		"M1MIK",
+		r.FormValue("callsign"),
 		"New User",
 		0,
-		"Mike",
+		r.FormValue("first"),
 		0,
-		"Hotel",
+		r.FormValue("last"),
+		[]byte(""),
 		time.Now().Unix(),
-		"time123hotel@example.com"}
+		r.FormValue("email")}
 
-	err := New.Checks()
-	if err != nil {
-		fmt.Println(err)
+	New.Password(r.FormValue("password"))
+
+	err = New.Checks()
+
+	if sip_request {
+		New.GenerateExtension()
 	}
 
-	err = New.GenerateExtension()
 	if err != nil {
-		fmt.Println(err)
+		response = fmt.Sprintf("ERROR: %s", err)
+	} else {
+		response = fmt.Sprintf("RESULT: OK, Callsign: %s\n", New.callsign)
 	}
 
-	err = New.GenerateId()
-	if err != nil {
-		fmt.Println(err)
-	}
+	w.Write([]byte(response))
+}
 
-	fmt.Println(New)
+func main() {
+
+	http.HandleFunc("/user", NewUser)
+	http.ListenAndServe(":8080", nil)
 
 }
